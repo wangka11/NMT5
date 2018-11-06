@@ -1,0 +1,49 @@
+#ugrad machine conda installation instructions
+
+#make sure you are running the bash shell
+bash
+
+#download the anacoda installation script
+wget https://repo.anaconda.com/archive/Anaconda3-5.2.0-Linux-x86_64.sh
+
+#run the anaconda installation script this will be interactive, and will take several minutes
+#When it asks "Do you wish the installer to prepend the Anaconda3 install location to PATH in your /home/USER/.bashrc ? [yes|no]"
+#respond yes
+#
+#When it asks "Do you wish to proceed with the installation of Microsoft VSCode? [yes|no]"
+#resond no
+bash Anaconda3-5.2.0-Linux-x86_64.sh
+
+source ~/.bashrc
+
+#check for conda updates (if it asks to update, say yes):
+conda update conda
+
+#create a conda for the course. 
+#When it asks "Proceed ([y]/n)?"
+#say yes
+conda create -n mtcourse python=3.6 pytorch-cpu=0.4.1 torchvision-cpu=0.2.1 matplotlib=2.2.3 nltk=3.3.0 -c pytorch
+###
+
+
+
+#activate the conda environment. 
+#you will need to do this each time you want to run or install anything
+bash
+source activate mtcourse
+
+#deactivate the conda enviroment
+#you can do this any time you want to leave the environment. just make sure you remember to start it again
+source deactivate
+
+#if conda is taking up too much disk space, you can try running: 
+conda clean --all
+
+
+#CAUTION: if you need to delete your enviroment and start from scratch:
+#source deactivate
+#conda env remove -n mtcourse
+
+
+
+
