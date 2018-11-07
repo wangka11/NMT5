@@ -5,7 +5,7 @@
 This code is based on the tutorial by Sean Robertson <https://github.com/spro/practical-pytorch> found here:
 https://pytorch.org/tutorials/intermediate/seq2seq_translation_tutorial.html
 
-Students *MAY NOT* view the above tutorial or use it as a reference in any way. 
+Students *MAY NOT* view the above tutorial or use it as a reference in any way.
 """
 
 from __future__ import unicode_literals, print_function, division
@@ -40,13 +40,16 @@ logging.basicConfig(level=logging.DEBUG,
 # make sure you are very careful if you are using a gpu on a shared cluster/grid,
 # it can be very easy to confict with other people's jobs.
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-device = torch.device("cpu")
+#device = torch.device("cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 SOS_token = "<SOS>"
 EOS_token = "<EOS>"
+PAD_token = "<PAD>"
 
 SOS_index = 0
 EOS_index = 1
+PAD_index = 2
 MAX_LENGTH = 15
 
 
@@ -156,10 +159,11 @@ class LSTM(nn.Module):
         self.u_o = torch.nn.Parameter(torch.Tensor(hidden_size, hidden_size))
         self.u_c = torch.nn.Parameter(torch.Tensor(hidden_size, hidden_size))
 
-        self.bias_f = torch.nn.Parameter(torch.Tensor(hidden_size).uniform_())
-        self.bias_i = torch.nn.Parameter(torch.Tensor(hidden_size).uniform_())
-        self.bias_o = torch.nn.Parameter(torch.Tensor(hidden_size).uniform_())
-        self.bias_c = torch.nn.Parameter(torch.Tensor(hidden_size).uniform_())
+        self.bias1 = torch.nn.Parameter(torch.Tensor(hidden_size).uniform_())
+        self.bias2 = torch.nn.Parameter(torch.Tensor(hidden_size).uniform_())
+        self.bias3 = torch.nn.Parameter(torch.Tensor(hidden_size).uniform_())
+        self.bias4 = torch.nn.Parameter(torch.Tensor(hidden_size).uniform_())
+
 
         self.sigmoid = nn.Sigmoid()
         self.tanh = nn.Tanh()
@@ -179,11 +183,11 @@ class LSTM(nn.Module):
         hidden = hidden.view(hidden.size()[0], -1)
         pre_cell = pre_cell.view(pre_cell.size()[0], -1)
 
-        f_t = self.sigmoid(torch.mm(input, self.w_f) + torch.mm(hidden, self.u_f) + self.bias_f)
-        i_t = self.sigmoid(torch.mm(input, self.w_i) + torch.mm(hidden, self.u_i) + self.bias_i)
-        o_t = self.sigmoid(torch.mm(input, self.w_o) + torch.mm(hidden, self.u_o) + self.bias_o)
+        f_t = self.sigmoid(torch.mm(input, self.w_f) + torch.mm(hidden, self.u_f) + self.bias1)
+        i_t = self.sigmoid(torch.mm(input, self.w_i) + torch.mm(hidden, self.u_i) + self.bias2)
+        o_t = self.sigmoid(torch.mm(input, self.w_o) + torch.mm(hidden, self.u_o) + self.bias3)
 
-        c_t = self.tanh(torch.mm(input, self.w_c) + torch.mm(hidden, self.u_c) + self.bias_c)
+        c_t = self.tanh(torch.mm(input, self.w_c) + torch.mm(hidden, self.u_c) + self.bias4)
         c_t = torch.mul(pre_cell, f_t) + torch.mul(i_t, c_t)
         h_t = torch.mul(o_t, self.tanh(c_t))
         h_t = h_t.view(h_t.size()[0], 1, -1)
@@ -207,53 +211,64 @@ class EncoderRNN(nn.Module):
         """
         "*** YOUR CODE HERE ***"
         self.hidden_size = hidden_size
+        self.input_size = input_size
         self.embedding = nn.Embedding(input_size, hidden_size)
-        #self.lstm = LSTM(hidden_size, hidden_size)
-        self.lstm = nn.LSTM(hidden_size, hidden_size)
+        self.lstm = nn.LSTM(hidden_size, hidden_size, bidirectional=True)
 
-    def forward(self, input_batch, hidden, cn):
+    def forward(self, input_batch, hidden, input_lengths):
         """runs the forward pass of the encoder
         returns the output and the hidden state
         """
         "*** YOUR CODE HERE ***"
-        embedded = self.embedding(input_batch).view(1, 1, -1)
-        output = embedded
-        cn = self.get_initial_hidden_state() if cn is None else cn
-        output, (hidden, cn) = self.lstm(output, (hidden, cn))
-        return output, hidden, cn
+        #print(input_batch.shape, self.input_size, self.hidden_size)
+        embedded = self.embedding(input_batch)
+        outputs = embedded
+        packed = torch.nn.utils.rnn.pack_padded_sequence(outputs, input_lengths)
+        print(packed.data.shape, hidden.shape, input_batch.shape, embedded.shape)
+        print(packed.data)
+        outputs, (hidden, cn) = self.lstm(packed, (hidden, None))
+        outputs, output_lengths = torch.nn.utils.rnn.pad_packed_sequence(outputs)
+        outputs = outputs[:, :, :self.hidden_size] + outputs[:, :, self.hidden_size:]
+        return outputs, hidden
 
-        # outputs = torch.zeros(MAX_LENGTH, 2 * self.hidden_size, device=device)
-        # input_length = input_batch.size(0)
+
+        outputs = torch.zeros(MAX_LENGTH, 2 * self.hidden_size, device=device)
+        input_length = input_batch.size(0)
+
+        # embedded = self.embedding(input_batch).view(1, 1, -1)
+        # output = embedded
         #
-        # pre_cell = self.get_initial_hidden_state()
-        # for ei in range(input_length):
-        #     input = input_batch[ei]
-        #     embedded = self.embedding(input).view(1, 1, -1)
-        #     output = embedded
-        #     hidden, pre_cell = self.lstm(output[0], hidden, pre_cell)
-        #     outputs[ei][:self.hidden_size] = hidden[0, 0]
-        #
-        # pre_cell = self.get_initial_hidden_state()
-        # hidden = self.get_initial_hidden_state()
-        # for ei in reversed(range(input_length)):
-        #     input = input_batch[ei]
-        #     embedded = self.embedding(input).view(1, 1, -1)
-        #     output = embedded
-        #     hidden, pre_cell = self.lstm(output[0], hidden, pre_cell)
-        #
-        #     outputs[ei][self.hidden_size:] = hidden[0, 0]
-        #
-        # return outputs, hidden
+        pre_cell = self.get_initial_hidden_state()
+        # output, (hidden, pre_cell) = self.lstm(output, (hidden, pre_cell))
+        # return output, hidden
+
+        for ei in range(input_length):
+            input = input_batch[ei]
+            embedded = self.embedding(input).view(1, 1, -1)
+            output = embedded
+            #print(output[0].shape)
+            output, (hidden, pre_cell) = self.lstm(output, (hidden, pre_cell))
+            outputs[ei][:self.hidden_size] = hidden[0, 0]
+        pre_cell = self.get_initial_hidden_state()
+        hidden = self.get_initial_hidden_state()
+        for ei in reversed(range(input_length)):
+            input = input_batch[ei]
+            embedded = self.embedding(input).view(1, 1, -1)
+            output = embedded
+            output, (hidden, pre_cell) = self.lstm(output, (hidden, pre_cell))
+
+            outputs[ei][self.hidden_size:] = hidden[0, 0]
+        return outputs, hidden
 
     def get_initial_hidden_state(self):
-        return torch.zeros(1, 1, self.hidden_size, device=device)
+        return torch.zeros(2, 3, self.hidden_size, device=device)
 
 
 class AttnDecoderRNN(nn.Module):
     """the class for the decoder
     """
 
-    def __init__(self, hidden_size, output_size, dropout_p=0.1, max_length=MAX_LENGTH):
+    def __init__(self, hidden_size, output_size, dropout_p=0.7, max_length=MAX_LENGTH):
         super(AttnDecoderRNN, self).__init__()
         self.hidden_size = hidden_size
         self.output_size = output_size
@@ -268,15 +283,14 @@ class AttnDecoderRNN(nn.Module):
         self.embedding = nn.Embedding(self.output_size, self.hidden_size)
         self.dropout = nn.Dropout(self.dropout_p)
 
-        #self.lstm = LSTM(self.hidden_size, self.hidden_size)
         self.lstm = nn.LSTM(self.hidden_size, self.hidden_size)
         self.out = nn.Linear(self.hidden_size, self.output_size)
         self.attention = nn.Linear(self.hidden_size * 2, self.max_length)
-        self.attention_combine = nn.Linear(self.hidden_size * 2, self.hidden_size)
+        self.attention_combine = nn.Linear(self.hidden_size * 3, self.hidden_size)
         self.softmax = nn.Softmax(dim=1)
         self.relu = nn.ReLU()
 
-    def forward(self, input, hidden, encoder_outputs, cn):
+    def forward(self, input, hidden, encoder_outputs):
         """runs the forward pass of the decoder
         returns the log_softmax, hidden state, and attn_weights
 
@@ -284,6 +298,7 @@ class AttnDecoderRNN(nn.Module):
         """
 
         "*** YOUR CODE HERE ***"
+        print(input.shape)
         embedded = self.dropout(self.embedding(input).view(1, 1, -1))
 
         attn_weights = self.softmax(self.attention(torch.cat((embedded[0], hidden[0]), 1)))
@@ -293,13 +308,12 @@ class AttnDecoderRNN(nn.Module):
 
         output = self.relu(self.attention_combine(output).unsqueeze(0))
 
-        cn = self.get_initial_hidden_state() if cn is None else cn
+        cn = self.get_initial_hidden_state()
 
-        #hidden, cn = self.lstm(output, hidden, cn)
         output, (hidden, cn) = self.lstm(output, (hidden, cn))
 
         log_softmax = F.log_softmax(self.out(hidden[0]), dim=1)
-        return log_softmax, hidden, attn_weights, cn
+        return log_softmax, hidden, attn_weights
 
     def get_initial_hidden_state(self):
         return torch.zeros(1, 1, self.hidden_size, device=device)
@@ -307,7 +321,8 @@ class AttnDecoderRNN(nn.Module):
 
 ######################################################################
 
-def train(input_tensor, target_tensor, encoder, decoder, optimizer, criterion, max_length=MAX_LENGTH):
+def train(input_tensor, target_tensor, encoder, decoder, optimizer,
+          criterion, input_lengths, target_lengths, max_length=MAX_LENGTH):
     encoder_hidden = encoder.get_initial_hidden_state()
 
     # make sure the encoder and decoder are in training mode so dropout is applied
@@ -318,53 +333,31 @@ def train(input_tensor, target_tensor, encoder, decoder, optimizer, criterion, m
 
     optimizer.zero_grad()
 
-    input_length = input_tensor.size(0)
     target_length = target_tensor.size(0)
-
-    encoder_outputs = torch.zeros(max_length, encoder.hidden_size, device=device)
 
     loss = 0
 
-    cn = None
-
-    for ei in range(input_length):
-        encoder_output, encoder_hidden, cn = encoder(
-            input_tensor[ei], encoder_hidden, cn)
-        encoder_outputs[ei] = encoder_output[0, 0]
+    encoder_outputs, encoder_hidden = encoder(input_tensor, encoder_hidden, input_lengths)
 
     decoder_input = torch.tensor([[SOS_index]], device=device)
 
     decoder_hidden = encoder_hidden
 
-    use_teacher_forcing = True if random.random() < 0.5 else False
+    for i in range(target_length):
+        decoder_output, decoder_hidden, decoder_attention = decoder(decoder_input, decoder_hidden, encoder_outputs)
+        topv, topi = decoder_output.topk(1)
 
-    cn = None
-    if use_teacher_forcing:
-        # Teacher forcing: Feed the target as the next input
-        for di in range(target_length):
-            decoder_output, decoder_hidden, decoder_attention, cn = decoder(
-                decoder_input, decoder_hidden, encoder_outputs, cn)
-            loss += criterion(decoder_output, target_tensor[di])
-            decoder_input = target_tensor[di]  # Teacher forcing
+        decoder_input = topi.squeeze().detach()
 
-    else:
-        # Without teacher forcing: use its own predictions as the next input
-        for di in range(target_length):
-            decoder_output, decoder_hidden, decoder_attention, cn = decoder(
-                decoder_input, decoder_hidden, encoder_outputs, cn)
-            topv, topi = decoder_output.topk(1)
-            decoder_input = topi.squeeze().detach()  # detach from history as input
-
-            loss += criterion(decoder_output, target_tensor[di])
-            if decoder_input.item() == EOS_token:
-                break
+        loss += criterion(decoder_output, target_tensor[i])
+        if decoder_input.item() == EOS_token:
+            break
 
     loss.backward()
 
     optimizer.step()
 
     return loss.item() / target_length
-
 
 
 ######################################################################
@@ -383,15 +376,14 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
         input_length = input_tensor.size()[0]
         encoder_hidden = encoder.get_initial_hidden_state()
 
-        encoder_outputs = torch.zeros(max_length, encoder.hidden_size, device=device)
+        # encoder_outputs = torch.zeros(max_length, encoder.hidden_size, device=device)
 
-        cn = None
-        for ei in range(input_length):
-            encoder_output, encoder_hidden, cn = encoder(input_tensor[ei],
-                                                     encoder_hidden, cn)
-            encoder_outputs[ei] += encoder_output[0, 0]
+        # for ei in range(input_length):
+        #     encoder_output, encoder_hidden = encoder(input_tensor[ei],
+        #                                              encoder_hidden)
+        #     encoder_outputs[ei] += encoder_output[0, 0]
 
-        #encoder_outputs, encoder_hidden = encoder(input_tensor, encoder_hidden)
+        encoder_outputs, encoder_hidden = encoder(input_tensor, encoder_hidden)
 
         decoder_input = torch.tensor([[SOS_index]], device=device)
 
@@ -399,10 +391,10 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
 
         decoded_words = []
         decoder_attentions = torch.zeros(max_length, max_length)
-        cn = None
+
         for di in range(max_length):
-            decoder_output, decoder_hidden, decoder_attention, cn = decoder(
-                decoder_input, decoder_hidden, encoder_outputs, cn)
+            decoder_output, decoder_hidden, decoder_attention = decoder(
+                decoder_input, decoder_hidden, encoder_outputs)
             decoder_attentions[di] = decoder_attention.data
             topv, topi = decoder_output.data.topk(1)
             if topi.item() == EOS_index:
@@ -486,7 +478,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--hidden_size', default=256, type=int,
                     help='hidden size of encoder/decoder, also word vector size')
-    ap.add_argument('--n_iters', default=100000, type=int,
+    ap.add_argument('--n_iters', default=1, type=int,
                     help='total number of examples to train on')
     ap.add_argument('--print_every', default=5000, type=int,
                     help='print loss info every this many training examples')
@@ -559,13 +551,19 @@ def main():
     start = time.time()
     print_loss_total = 0  # Reset every args.print_every
 
+    sorted_pairs = sorted(train_pairs, key=lambda pair: len(pair[0]))
+    batch_size = 3
     while iter_num < args.n_iters:
         iter_num += 1
         training_pair = tensors_from_pair(src_vocab, tgt_vocab, random.choice(train_pairs))
-        input_tensor = training_pair[0]
-        target_tensor = training_pair[1]
+        input_tensor, input_lengths, target_tensor, target_lengths = getBatches(batch_size,
+                                                                                src_vocab, tgt_vocab, sorted_pairs)
+
+        # input_tensor = training_pair[0]
+        # target_tensor = training_pair[1]
+
         loss = train(input_tensor, target_tensor, encoder,
-                     decoder, optimizer, criterion)
+                     decoder, optimizer, criterion, input_lengths, target_lengths)
         print_loss_total += loss
         # print(loss)
 
@@ -595,7 +593,6 @@ def main():
 
             references = [[clean(pair[1]).split(), ] for pair in dev_pairs[:len(translated_sentences)]]
             candidates = [clean(sent).split() for sent in translated_sentences]
-
             dev_bleu = corpus_bleu(references, candidates)
             logging.info('Dev BLEU score: %.2f', dev_bleu)
 
@@ -615,6 +612,34 @@ def main():
     translate_and_show_attention("c est mon hero@@ s ", encoder, decoder, src_vocab, tgt_vocab, fig, ax4)
     plt.tight_layout()
     fig.savefig(args.fig)
+
+
+def getBatches(batch_size, src_vocab, tgt_vocab, pairs):
+
+    batches = []
+    for i in range(batch_size):
+        pair = random.choice(pairs)
+        in_seq = [src_vocab.word2index[word] for word in pair[0].split(' ')]
+        tgt_seq = [tgt_vocab.word2index[word] for word in pair[1].split(' ')]
+        batches.append([in_seq, tgt_seq])
+
+    in_seqs, tgt_seqs = zip(*sortPairs(batches))
+    in_lengths = [len(s) for s in in_seqs]
+    in_padded = [padding(s, max(in_lengths)) for s in in_seqs]
+    tgt_lengths = [len(s) for s in tgt_seqs]
+    tgt_padded = [padding(s, max(tgt_lengths)) for s in tgt_seqs]
+    in_tensor = torch.tensor(in_padded, dtype=torch.long, device=device).transpose(0, 1)
+    tgt_tensor = torch.tensor(tgt_padded, dtype=torch.long, device=device).transpose(0, 1)
+    return in_tensor, in_lengths, tgt_tensor, tgt_lengths
+
+
+def sortPairs(pairs):
+    return sorted(pairs, key=lambda pair : len(pair[0]), reverse=True)
+
+
+def padding(seq, max_length):
+    seq += [PAD_index for i in range(max_length - len(seq))] + [EOS_index]
+    return seq
 
 if __name__ == '__main__':
     main()
