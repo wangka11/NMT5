@@ -220,6 +220,7 @@ class EncoderRNN(nn.Module):
         output = embedded
         cn = self.get_initial_hidden_state() if cn is None else cn
         output, (hidden, cn) = self.lstm(output, (hidden, cn))
+
         return output, hidden, cn
 
         # outputs = torch.zeros(MAX_LENGTH, 2 * self.hidden_size, device=device)
@@ -285,7 +286,6 @@ class AttnDecoderRNN(nn.Module):
 
         "*** YOUR CODE HERE ***"
         embedded = self.dropout(self.embedding(input).view(1, 1, -1))
-
         attn_weights = self.softmax(self.attention(torch.cat((embedded[0], hidden[0]), 1)))
         attn_applied = torch.bmm(attn_weights.unsqueeze(0), encoder_outputs.unsqueeze(0))
 
@@ -347,6 +347,7 @@ def train(input_tensor, target_tensor, encoder, decoder, optimizer, criterion, m
             loss += criterion(decoder_output, target_tensor[di])
             decoder_input = target_tensor[di]  # Teacher forcing
 
+
     else:
         # Without teacher forcing: use its own predictions as the next input
         for di in range(target_length):
@@ -356,6 +357,7 @@ def train(input_tensor, target_tensor, encoder, decoder, optimizer, criterion, m
             decoder_input = topi.squeeze().detach()  # detach from history as input
 
             loss += criterion(decoder_output, target_tensor[di])
+
             if decoder_input.item() == EOS_token:
                 break
 

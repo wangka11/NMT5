@@ -21,7 +21,7 @@ import matplotlib
 # if you are running on the gradx/ugradx/ another cluster,
 # you will need the following line
 # if you run on a local machine, you can comment it out
-matplotlib.use('agg')
+#matplotlib.use('agg')
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import torch
@@ -51,6 +51,7 @@ SOS_index = 0
 EOS_index = 1
 PAD_index = 2
 MAX_LENGTH = 15
+BATCH_SIZE = 3
 
 
 class Vocab:
@@ -61,8 +62,8 @@ class Vocab:
         self.lang_code = lang_code
         self.word2index = {}
         self.word2count = {}
-        self.index2word = {SOS_index: SOS_token, EOS_index: EOS_token}
-        self.n_words = 2  # Count SOS and EOS
+        self.index2word = {SOS_index: SOS_token, EOS_index: EOS_token, PAD_index: PAD_token}
+        self.n_words = 3  # Count SOS and EOS
 
     def add_sentence(self, sentence):
         for word in sentence.split(' '):
@@ -215,53 +216,92 @@ class EncoderRNN(nn.Module):
         self.embedding = nn.Embedding(input_size, hidden_size)
         self.lstm = nn.LSTM(hidden_size, hidden_size, bidirectional=True)
 
-    def forward(self, input_batch, hidden, input_lengths):
+    def forward(self, input_batch, hidden, input_lengths, batched=False):
         """runs the forward pass of the encoder
         returns the output and the hidden state
         """
         "*** YOUR CODE HERE ***"
         #print(input_batch.shape, self.input_size, self.hidden_size)
-        embedded = self.embedding(input_batch)
-        outputs = embedded
-        packed = torch.nn.utils.rnn.pack_padded_sequence(outputs, input_lengths)
-        print(packed.data.shape, hidden.shape, input_batch.shape, embedded.shape)
-        print(packed.data)
-        outputs, (hidden, cn) = self.lstm(packed, (hidden, None))
-        outputs, output_lengths = torch.nn.utils.rnn.pad_packed_sequence(outputs)
-        outputs = outputs[:, :, :self.hidden_size] + outputs[:, :, self.hidden_size:]
-        return outputs, hidden
+        if batched:
+            embedded = self.embedding(input_batch)
+            outputs = embedded
+            packed = torch.nn.utils.rnn.pack_padded_sequence(outputs, input_lengths)
+            cn = self.get_batched_hidden_state()
+            outputs, (hidden, cn) = self.lstm(packed, (hidden, cn))
+
+            outputs, output_lengths = torch.nn.utils.rnn.pad_packed_sequence(outputs)
+            outputs = outputs[:, :, :self.hidden_size] + outputs[:, :, self.hidden_size:]
+            return outputs, hidden
+        else:
+            outputs = torch.zeros(MAX_LENGTH, 2 * self.hidden_size, device=device)
+            input_length = input_batch.size(0)
+
+            pre_cell = self.get_initial_hidden_state()
+
+            for ei in range(input_length):
+                input = input_batch[ei]
+                embedded = self.embedding(input).view(1, 1, -1)
+                output = embedded
+                output, (hidden, pre_cell) = self.lstm(output, (hidden, pre_cell))
+                outputs[ei][:self.hidden_size] = hidden[0, 0]
+            pre_cell = self.get_initial_hidden_state()
+            hidden = self.get_initial_hidden_state()
+            for ei in reversed(range(input_length)):
+                input = input_batch[ei]
+                embedded = self.embedding(input).view(1, 1, -1)
+                output = embedded
+                output, (hidden, pre_cell) = self.lstm(output, (hidden, pre_cell))
+
+                outputs[ei][self.hidden_size:] = hidden[0, 0]
+            outputs = outputs[:, :self.hidden_size] + outputs[:, self.hidden_size:]
+            return outputs, hidden
 
 
-        outputs = torch.zeros(MAX_LENGTH, 2 * self.hidden_size, device=device)
-        input_length = input_batch.size(0)
-
-        # embedded = self.embedding(input_batch).view(1, 1, -1)
-        # output = embedded
+        # outputs = torch.zeros(MAX_LENGTH, 2 * self.hidden_size, device=device)
+        # input_length = input_batch.size(0)
         #
-        pre_cell = self.get_initial_hidden_state()
-        # output, (hidden, pre_cell) = self.lstm(output, (hidden, pre_cell))
-        # return output, hidden
+        # # embedded = self.embedding(input_batch).view(1, 1, -1)
+        # # output = embedded
+        # #
+        # pre_cell = self.get_initial_hidden_state()
+        # # output, (hidden, pre_cell) = self.lstm(output, (hidden, pre_cell))
+        # # return output, hidden
+        #
+        # for ei in range(input_length):
+        #     input = input_batch[ei]
+        #     embedded = self.embedding(input).view(1, 1, -1)
+        #     output = embedded
+        #     #print(output[0].shape)
+        #     output, (hidden, pre_cell) = self.lstm(output, (hidden, pre_cell))
+        #     outputs[ei][:self.hidden_size] = hidden[0, 0]
+        # pre_cell = self.get_initial_hidden_state()
+        # hidden = self.get_initial_hidden_state()
+        # for ei in reversed(range(input_length)):
+        #     input = input_batch[ei]
+        #     embedded = self.embedding(input).view(1, 1, -1)
+        #     output = embedded
+        #     output, (hidden, pre_cell) = self.lstm(output, (hidden, pre_cell))
+        #
+        #     outputs[ei][self.hidden_size:] = hidden[0, 0]
+        # return outputs, hidden
 
-        for ei in range(input_length):
-            input = input_batch[ei]
-            embedded = self.embedding(input).view(1, 1, -1)
-            output = embedded
-            #print(output[0].shape)
-            output, (hidden, pre_cell) = self.lstm(output, (hidden, pre_cell))
-            outputs[ei][:self.hidden_size] = hidden[0, 0]
-        pre_cell = self.get_initial_hidden_state()
-        hidden = self.get_initial_hidden_state()
-        for ei in reversed(range(input_length)):
-            input = input_batch[ei]
-            embedded = self.embedding(input).view(1, 1, -1)
-            output = embedded
-            output, (hidden, pre_cell) = self.lstm(output, (hidden, pre_cell))
+    def get_batched_hidden_state(self):
+        return torch.zeros(2, BATCH_SIZE, self.hidden_size, device=device)
 
-            outputs[ei][self.hidden_size:] = hidden[0, 0]
-        return outputs, hidden
 
     def get_initial_hidden_state(self):
-        return torch.zeros(2, 3, self.hidden_size, device=device)
+        return torch.zeros(2, 1, self.hidden_size, device=device)
+
+
+class Attention(nn.Module):
+
+    def __init__(self, hidden_size):
+        super(Attention, self).__init__()
+        self.hidden_size = hidden_size
+        self.attention = nn.Linear(self.hidden_size * 2, self.hidden_size)
+        self.attention_v = nn.Parameter(torch.ones(self.hidden_size)) #FloatTensor(1, self.hidden_size))
+
+   # def forward(self, hidden, outputs):
 
 
 class AttnDecoderRNN(nn.Module):
@@ -283,14 +323,17 @@ class AttnDecoderRNN(nn.Module):
         self.embedding = nn.Embedding(self.output_size, self.hidden_size)
         self.dropout = nn.Dropout(self.dropout_p)
 
-        self.lstm = nn.LSTM(self.hidden_size, self.hidden_size)
+        self.lstm = nn.LSTM(self.hidden_size, self.hidden_size, bidirectional=True)
         self.out = nn.Linear(self.hidden_size, self.output_size)
-        self.attention = nn.Linear(self.hidden_size * 2, self.max_length)
-        self.attention_combine = nn.Linear(self.hidden_size * 3, self.hidden_size)
+        self.attention = nn.Linear(self.hidden_size * 2, self.hidden_size) #max_length)
+        self.attentionNB = nn.Linear(self.hidden_size * 2, self.max_length)
+        self.attention_combine = nn.Linear(self.hidden_size * 2, self.hidden_size)
+        self.attention_v = nn.Parameter(torch.ones(self.hidden_size)) #FloatTensor(1, self.hidden_size))
         self.softmax = nn.Softmax(dim=1)
         self.relu = nn.ReLU()
+        self.tanh = nn.Tanh()
 
-    def forward(self, input, hidden, encoder_outputs):
+    def forward(self, input, hidden, encoder_outputs, batched=False):
         """runs the forward pass of the decoder
         returns the log_softmax, hidden state, and attn_weights
 
@@ -298,32 +341,66 @@ class AttnDecoderRNN(nn.Module):
         """
 
         "*** YOUR CODE HERE ***"
-        print(input.shape)
-        embedded = self.dropout(self.embedding(input).view(1, 1, -1))
+        if batched:
+            embedded = self.dropout(self.embedding(input).view(1, BATCH_SIZE, self.hidden_size))
 
-        attn_weights = self.softmax(self.attention(torch.cat((embedded[0], hidden[0]), 1)))
-        attn_applied = torch.bmm(attn_weights.unsqueeze(0), encoder_outputs.unsqueeze(0))
+            cn = self.get_batched_hidden_state()
+            output, (hidden, cn) = self.lstm(embedded, (hidden, cn))
+            output = output[:, :, :self.hidden_size] + output[:, :, self.hidden_size:]
 
-        output = torch.cat((embedded[0], attn_applied[0]), 1)
+            attn_weights = torch.tensor(torch.zeros(BATCH_SIZE, encoder_outputs.size(0)), device=device)
+            for i in range(BATCH_SIZE):
+                for j in range(encoder_outputs.size(0)):
+                    #attn_weights[i, j] = self.attention(torch.cat((embedded[0, i].unsqueeze(0), hidden[0, i].unsqueeze(0)), 1))
+                    #print(output[:, i].shape, encoder_outputs[j, i].unsqueeze(0).shape)
 
-        output = self.relu(self.attention_combine(output).unsqueeze(0))
+                    temp = self.attention(torch.cat((output[:, i], encoder_outputs[j, i].unsqueeze(0)), 1))
 
-        cn = self.get_initial_hidden_state()
+                    attn_weights[i, j] = self.attention_v.view(-1).dot((temp.view(-1)))
 
-        output, (hidden, cn) = self.lstm(output, (hidden, cn))
+                    #attn_weights[i, j] = hidden[:, i].dot(encoder_outputs[j, i].unsqueeze(0))
 
-        log_softmax = F.log_softmax(self.out(hidden[0]), dim=1)
-        return log_softmax, hidden, attn_weights
+            attn_weights = self.softmax(attn_weights).unsqueeze(1).view(1, BATCH_SIZE, -1)
+
+            attn_applied = torch.bmm(attn_weights.transpose(0, 1), encoder_outputs.transpose(0, 1).squeeze(1)).transpose(0, 1).squeeze(0)
+            #cont = attn_weights.bmm(encoder_outputs.transpose(0, 1)).squeeze(1)
+            output = output.squeeze(0)
+
+            output = self.tanh(self.attention_combine(torch.cat((output, attn_applied), 1))) # OR USE ReLU?
+            output = self.out(output)
+            return output, hidden, attn_weights
+
+        else:
+            embedded = self.dropout(self.embedding(input).view(1, 1, -1))
+            attn_weights = self.softmax(self.attentionNB(torch.cat((embedded[0], hidden[0]), 1)))
+
+            attn_applied = torch.bmm(attn_weights.unsqueeze(0), encoder_outputs.unsqueeze(0))
+
+            output = torch.cat((embedded[0], attn_applied[0]), 1)
+
+            output = self.relu(self.attention_combine(output).unsqueeze(0))
+
+            cn = self.get_initial_hidden_state()
+
+            output, (hidden, cn) = self.lstm(output, (hidden, cn))
+
+            log_softmax = F.log_softmax(self.out(hidden[0]), dim=1)
+            return log_softmax, hidden, attn_weights
+
+
+    def get_batched_hidden_state(self):
+        return torch.zeros(2, BATCH_SIZE, self.hidden_size, device=device)
+
 
     def get_initial_hidden_state(self):
-        return torch.zeros(1, 1, self.hidden_size, device=device)
+        return torch.zeros(2, 1, self.hidden_size, device=device)
 
 
 ######################################################################
 
 def train(input_tensor, target_tensor, encoder, decoder, optimizer,
           criterion, input_lengths, target_lengths, max_length=MAX_LENGTH):
-    encoder_hidden = encoder.get_initial_hidden_state()
+    encoder_hidden = encoder.get_batched_hidden_state()
 
     # make sure the encoder and decoder are in training mode so dropout is applied
     encoder.train()
@@ -337,21 +414,42 @@ def train(input_tensor, target_tensor, encoder, decoder, optimizer,
 
     loss = 0
 
-    encoder_outputs, encoder_hidden = encoder(input_tensor, encoder_hidden, input_lengths)
+    encoder_outputs, encoder_hidden = encoder(input_tensor, encoder_hidden, input_lengths, batched=True)
 
-    decoder_input = torch.tensor([[SOS_index]], device=device)
+    decoder_input = torch.tensor([SOS_index] * BATCH_SIZE, device=device)
 
     decoder_hidden = encoder_hidden
 
-    for i in range(target_length):
-        decoder_output, decoder_hidden, decoder_attention = decoder(decoder_input, decoder_hidden, encoder_outputs)
-        topv, topi = decoder_output.topk(1)
+    max_tgt_length = max(target_lengths)
 
-        decoder_input = topi.squeeze().detach()
+    decoder_outputs = torch.tensor(torch.zeros(max_tgt_length, BATCH_SIZE, decoder.output_size), device=device)
+
+    #decoder_outputs = torch.tensor(torch.zeros(max_tgt_length, BATCH_SIZE, decoder.output_size), device=device)
+
+    for i in range(max_tgt_length):
+        decoder_output, decoder_hidden, decoder_attention = decoder(decoder_input, decoder_hidden, encoder_outputs, batched=True)
+        #topv, topi = decoder_output.topk(1)
+
+        #decoder_outputs[i] = topi.squeeze().detach()
+        decoder_outputs[i] = decoder_output
+        decoder_input = target_tensor[i]
 
         loss += criterion(decoder_output, target_tensor[i])
-        if decoder_input.item() == EOS_token:
-            break
+
+        # print(decoder_output, decoder_input)
+        # if decoder_input.item() == PAD_token:
+        #     break
+
+
+    # for i in range(target_length):
+    #     decoder_output, decoder_hidden, decoder_attention = decoder(decoder_input, decoder_hidden, encoder_outputs)
+    #     topv, topi = decoder_output.topk(1)
+    #
+    #     decoder_input = topi.squeeze().detach()
+    #
+    #     loss += criterion(decoder_output, target_tensor[i])
+    #     if decoder_input.item() == EOS_token:
+    #         break
 
     loss.backward()
 
@@ -372,9 +470,12 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
     decoder.eval()
 
     with torch.no_grad():
+        #print(sentence)
         input_tensor = tensor_from_sentence(src_vocab, sentence)
         input_length = input_tensor.size()[0]
         encoder_hidden = encoder.get_initial_hidden_state()
+
+        input_lengths = [len(input_tensor)]
 
         # encoder_outputs = torch.zeros(max_length, encoder.hidden_size, device=device)
 
@@ -383,7 +484,8 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
         #                                              encoder_hidden)
         #     encoder_outputs[ei] += encoder_output[0, 0]
 
-        encoder_outputs, encoder_hidden = encoder(input_tensor, encoder_hidden)
+        #encoder_outputs, encoder_hidden = encoder(input_tensor, encoder_hidden)
+        encoder_outputs, encoder_hidden = encoder(input_tensor, encoder_hidden, input_lengths)
 
         decoder_input = torch.tensor([[SOS_index]], device=device)
 
@@ -478,7 +580,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--hidden_size', default=256, type=int,
                     help='hidden size of encoder/decoder, also word vector size')
-    ap.add_argument('--n_iters', default=1, type=int,
+    ap.add_argument('--n_iters', default=10000, type=int,
                     help='total number of examples to train on')
     ap.add_argument('--print_every', default=5000, type=int,
                     help='print loss info every this many training examples')
@@ -552,11 +654,11 @@ def main():
     print_loss_total = 0  # Reset every args.print_every
 
     sorted_pairs = sorted(train_pairs, key=lambda pair: len(pair[0]))
-    batch_size = 3
+
     while iter_num < args.n_iters:
         iter_num += 1
         training_pair = tensors_from_pair(src_vocab, tgt_vocab, random.choice(train_pairs))
-        input_tensor, input_lengths, target_tensor, target_lengths = getBatches(batch_size,
+        input_tensor, input_lengths, target_tensor, target_lengths = getBatches(BATCH_SIZE,
                                                                                 src_vocab, tgt_vocab, sorted_pairs)
 
         # input_tensor = training_pair[0]
