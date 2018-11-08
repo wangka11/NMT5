@@ -30,6 +30,9 @@ import torch.nn.functional as F
 from nltk.translate.bleu_score import corpus_bleu
 from torch import optim
 import math
+from Queue import PriorityQueue
+import operator
+
 from torch.autograd import Variable
 import numpy as np
 
@@ -51,7 +54,8 @@ SOS_index = 0
 EOS_index = 1
 PAD_index = 2
 MAX_LENGTH = 15
-BATCH_SIZE = 3
+#BATCH_SIZE = 10
+
 
 
 class Vocab:
@@ -223,10 +227,11 @@ class EncoderRNN(nn.Module):
         "*** YOUR CODE HERE ***"
         #print(input_batch.shape, self.input_size, self.hidden_size)
         if batched:
+
             embedded = self.embedding(input_batch)
             outputs = embedded
             packed = torch.nn.utils.rnn.pack_padded_sequence(outputs, input_lengths)
-            cn = self.get_batched_hidden_state()
+            cn = self.get_batched_hidden_state(input_batch.size(1))
             outputs, (hidden, cn) = self.lstm(packed, (hidden, cn))
 
             outputs, output_lengths = torch.nn.utils.rnn.pad_packed_sequence(outputs)
@@ -285,8 +290,8 @@ class EncoderRNN(nn.Module):
         #     outputs[ei][self.hidden_size:] = hidden[0, 0]
         # return outputs, hidden
 
-    def get_batched_hidden_state(self):
-        return torch.zeros(2, BATCH_SIZE, self.hidden_size, device=device)
+    def get_batched_hidden_state(self, batch_size):
+        return torch.zeros(2, batch_size, self.hidden_size, device=device)
 
 
     def get_initial_hidden_state(self):
@@ -323,7 +328,7 @@ class AttnDecoderRNN(nn.Module):
         self.embedding = nn.Embedding(self.output_size, self.hidden_size)
         self.dropout = nn.Dropout(self.dropout_p)
 
-        self.lstm = nn.LSTM(self.hidden_size, self.hidden_size, dropout=dropout_p)
+        self.lstm = nn.LSTM(self.hidden_size, self.hidden_size)
         self.out = nn.Linear(self.hidden_size, self.output_size)
         self.attention = nn.Linear(self.hidden_size * 2, self.hidden_size) #max_length)
         self.attentionNB = nn.Linear(self.hidden_size * 2, self.max_length)
@@ -342,28 +347,30 @@ class AttnDecoderRNN(nn.Module):
 
         "*** YOUR CODE HERE ***"
         if batched:
-            embedded = self.dropout(self.embedding(input).view(1, BATCH_SIZE, self.hidden_size))
+            batch_size = encoder_outputs.size(1)
+            embedded = self.dropout(self.embedding(input).view(1, batch_size, self.hidden_size))
 
-            cn = self.get_batched_hidden_state()
+            cn = self.get_batched_hidden_state(batch_size)
             output, (hidden, cn) = self.lstm(embedded, (hidden, cn))
             #output = output[:, :, :self.hidden_size] + output[:, :, self.hidden_size:]
 
-            attn_weights = torch.tensor(torch.zeros(BATCH_SIZE, encoder_outputs.size(0)), device=device)
-            for i in range(BATCH_SIZE):
+            attn_weights = torch.tensor(torch.zeros(batch_size, encoder_outputs.size(0)), device=device)
+            for i in range(batch_size):
                 for j in range(encoder_outputs.size(0)):
                     #attn_weights[i, j] = self.attention(torch.cat((embedded[0, i].unsqueeze(0), hidden[0, i].unsqueeze(0)), 1))
                     #print(output[:, i].shape, encoder_outputs[j, i].unsqueeze(0).shape)
 
-                    temp = self.attention(torch.cat((output[:, i], encoder_outputs[j, i].unsqueeze(0)), 1))
+                    temp = self.attention(torch.cat((hidden[:, i], encoder_outputs[j, i].unsqueeze(0)), 1))
 
                     attn_weights[i, j] = self.attention_v.view(-1).dot((temp.view(-1)))
 
                     #attn_weights[i, j] = hidden[:, i].dot(encoder_outputs[j, i].unsqueeze(0))
 
-            attn_weights = self.softmax(attn_weights).unsqueeze(1).view(1, BATCH_SIZE, -1)
+            attn_weights = self.softmax(attn_weights).unsqueeze(0)
 
-            attn_applied = torch.bmm(attn_weights.transpose(0, 1), encoder_outputs.transpose(0, 1).squeeze(1)).transpose(0, 1).squeeze(0)
+            attn_applied = torch.bmm(attn_weights.transpose(0, 1), encoder_outputs.transpose(0, 1).squeeze(1)).squeeze(1)
             #cont = attn_weights.bmm(encoder_outputs.transpose(0, 1)).squeeze(1)
+
             output = output.squeeze(0)
 
             output = self.tanh(self.attention_combine(torch.cat((output, attn_applied), 1))) # OR USE ReLU?
@@ -388,8 +395,8 @@ class AttnDecoderRNN(nn.Module):
             return log_softmax, hidden, attn_weights
 
 
-    def get_batched_hidden_state(self):
-        return torch.zeros(1, BATCH_SIZE, self.hidden_size, device=device)
+    def get_batched_hidden_state(self, batch_size):
+        return torch.zeros(1, batch_size, self.hidden_size, device=device)
 
 
     def get_initial_hidden_state(self):
@@ -400,14 +407,14 @@ class AttnDecoderRNN(nn.Module):
 
 def train(input_tensor, target_tensor, encoder, decoder, optimizer,
           criterion, input_lengths, target_lengths, max_length=MAX_LENGTH):
-    encoder_hidden = encoder.get_batched_hidden_state()
+    encoder_hidden = encoder.get_batched_hidden_state(input_tensor.size(1))
 
     # make sure the encoder and decoder are in training mode so dropout is applied
     encoder.train()
     decoder.train()
 
     "*** YOUR CODE HERE ***"
-    print(input_tensor.shape)
+
     optimizer.zero_grad()
 
     target_length = target_tensor.size(0)
@@ -416,13 +423,14 @@ def train(input_tensor, target_tensor, encoder, decoder, optimizer,
 
     encoder_outputs, encoder_hidden = encoder(input_tensor, encoder_hidden, input_lengths, batched=True)
 
-    decoder_input = torch.tensor([SOS_index] * BATCH_SIZE, device=device)
+    batch_size = input_tensor.size(1)
+    decoder_input = torch.tensor([SOS_index] * batch_size, device=device)
 
     decoder_hidden = encoder_hidden[:1]
 
     max_tgt_length = max(target_lengths)
 
-    decoder_outputs = torch.tensor(torch.zeros(max_tgt_length, BATCH_SIZE, decoder.output_size), device=device)
+    decoder_outputs = torch.tensor(torch.zeros(max_tgt_length, batch_size, decoder.output_size), device=device)
 
     #decoder_outputs = torch.tensor(torch.zeros(max_tgt_length, BATCH_SIZE, decoder.output_size), device=device)
 
@@ -458,6 +466,29 @@ def train(input_tensor, target_tensor, encoder, decoder, optimizer,
     return loss.item() / target_length
 
 
+class BeamSearchNode(object):
+   def __init__(self, hiddenstate, previousNode, wordId, logProb, length, attention):
+       '''
+       :param hiddenstate:
+       :param previousNode:
+       :param wordId:
+       :param logProb:
+       :param length:
+       '''
+       self.h = hiddenstate
+       self.prevNode = previousNode
+       self.wordid = wordId
+       self.logp = logProb
+       self.leng = length
+       self.attention = attention
+
+   def eval(self, alpha=1.0):
+       reward = 0
+       # Add here a function for shaping a reward
+
+       return self.logp / float(self.leng - 1 + 1e-6) + alpha * reward
+
+
 ######################################################################
 
 def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_LENGTH):
@@ -470,10 +501,16 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
     decoder.eval()
 
     with torch.no_grad():
+        beam_width = max_length
+        topk = 1  # how many sentence do you want to generate
+        decoded_batch = []
+        attention_batch = []
+
+
         #print(sentence)
         input_tensor = tensor_from_sentence(src_vocab, sentence)
         input_length = input_tensor.size()[0]
-        encoder_hidden = encoder.get_initial_hidden_state()
+        encoder_hidden = encoder.get_batched_hidden_state(input_tensor.size(1))
 
         input_lengths = [len(input_tensor)]
 
@@ -485,19 +522,134 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
         #     encoder_outputs[ei] += encoder_output[0, 0]
 
         #encoder_outputs, encoder_hidden = encoder(input_tensor, encoder_hidden)
-        encoder_outputs, encoder_hidden = encoder(input_tensor, encoder_hidden, input_lengths)
+        encoder_outputs, encoder_hidden = encoder(input_tensor, encoder_hidden, input_lengths, batched=True)
 
         decoder_input = torch.tensor([[SOS_index]], device=device)
 
-        decoder_hidden = encoder_hidden
+        decoder_hidden = encoder_hidden[:1]
+
+
+        # Number of sentence to generate
+        endnodes = []
+        number_required = min((topk + 1), topk - len(endnodes))
+
+        # starting node -  hidden vector, previous node, word id, logp, length
+        # def __init__(self, hiddenstate, previousNode, wordId, logProb, length):
+        node = BeamSearchNode(decoder_hidden, None, decoder_input, 0, 1, torch.zeros(max_length))
+        nodes = PriorityQueue()
+
+        # start the queue
+        nodes.put((-node.eval(), node))
+        qsize = 1
 
         decoded_words = []
         decoder_attentions = torch.zeros(max_length, max_length)
 
+        while True:
+            if qsize > 2000:
+                break
+            score, n = nodes.get()
+            decoder_input = n.wordid
+            decoder_hidden = n.h
+            if n.wordid.item() == EOS_token and n.prevNode != None:
+                endnodes.append((score, n))
+                # if we reached maximum # of sentences required
+                if len(endnodes) >= number_required:
+                    break
+                else:
+                    continue
+
+            # decode for one step using decoder
+            # decoder_output, decoder_hidden = decoder(decoder_input, decoder_hidden, encoder_output)
+            decoder_output, decoder_hidden, decoder_attention = decoder(decoder_input, decoder_hidden, encoder_outputs, batched=True)
+
+            # PUT HERE REAL BEAM SEARCH OF TOP
+            log_prob, indexes = torch.topk(decoder_output, beam_width)
+            nextnodes = []
+
+            for new_k in range(beam_width):
+                decoded_t = indexes[0][new_k].view(1, -1)
+                log_p = log_prob[0][new_k].item()
+
+                node = BeamSearchNode(decoder_hidden, n, decoded_t, n.logp + log_p, n.leng + 1, decoder_attention)
+                score = -node.eval()
+                nextnodes.append((score, node))
+            # put them into queue
+            for i in range(len(nextnodes)):
+                score, nn = nextnodes[i]
+                nodes.put((score, nn))
+                # increase qsize
+            qsize += len(nextnodes) - 1
+            # choose nbest paths, back trace them
+        if len(endnodes) == 0:
+            endnodes = [nodes.get() for _ in range(topk)]
+
+        utterances = []
+        attentions = []
+        for score, n in sorted(endnodes, key=operator.itemgetter(0)):
+            utterance = []
+            utterance.append(n.wordid)
+            attention = []
+            attention.append(n.attention)
+            # back trace
+            while n.prevNode != None:
+                n = n.prevNode
+                utterance.append(n.wordid)
+                attention.append(n.attention.data)
+
+            utterance = utterance[::-1]
+            attention = attention[::-1]
+            utterances.append(utterance)
+            attentions.append(attention)
+
+        decoded_batch.append(utterances)
+        attention_batch.append(attentions)
+
+        # print(len(decoded_batch), len(decoded_batch[0]), len(decoded_batch[0][0]))
+        res = np.array(decoded_batch)
+        # res_attention = np.array(attention_batch)
+        # print(res.shape)
+        # print(res[0,0,0:])
+        # print(sentence)
+
+        decoded_words = []
+        decoder_attentions = torch.zeros(max_length, max_length)
+        # print(decoder_attentions.shape)
+        for i in range(max_length):
+            # index = decoded_batch[0][0][i].item()
+            try:
+                index = res[0, 0, i]
+                # print('1',decoder_attentions.shape)
+                #
+                # print('2',type(attention_batch[0][0][i].data))
+                # print('3',attention_batch[0][0][i].data.shape)
+                # print('4',decoder_attentions[i].shape, attention_batch[0][0][i].data.shape)
+
+                decoder_attentions[i, :attention_batch[0][0][i].size(-1)] = attention_batch[0][0][i].data
+
+                if index == EOS_index:
+                    decoded_words.append(EOS_token)
+                    break
+                else:
+                    # print(index)
+                    # print(tgt_vocab.index2word[index])
+                    decoded_words.append(tgt_vocab.index2word[index])
+                # decoder_attentions[i] = decoder_attention.data
+                # decoder_attentions[i] = decoder_attention.data
+            except IndexError:
+                decoded_words.append(EOS_token)
+                break
+
+        # print(decoded_words)
+        return decoded_words, decoder_attentions[:i + 1, :len(encoder_outputs)] #max_length]
+
+
         for di in range(max_length):
             decoder_output, decoder_hidden, decoder_attention = decoder(
-                decoder_input, decoder_hidden, encoder_outputs)
-            decoder_attentions[di] = decoder_attention.data
+                decoder_input, decoder_hidden, encoder_outputs, batched=True)
+            decoder_attentions[di, :decoder_attention.size(2)] += decoder_attention.squeeze(0).squeeze(0).cpu().data
+
+            #decoder_attentions[di] = decoder_attention.data
             topv, topi = decoder_output.data.topk(1)
             if topi.item() == EOS_index:
                 decoded_words.append(EOS_token)
@@ -507,7 +659,7 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
 
             decoder_input = topi.squeeze().detach()
 
-        return decoded_words, decoder_attentions[:di + 1]
+        return decoded_words, decoder_attentions[:di + 1, :len(encoder_outputs)]
 
 
 ######################################################################
@@ -580,13 +732,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--hidden_size', default=256, type=int,
                     help='hidden size of encoder/decoder, also word vector size')
-    ap.add_argument('--n_iters', default=10000, type=int,
+    ap.add_argument('--batch_size', default=3, type=int,
+                    help='batch size of training')
+    ap.add_argument('--n_iters', default=100, type=int,
                     help='total number of examples to train on')
-    ap.add_argument('--print_every', default=5000, type=int,
+    ap.add_argument('--print_every', default=500, type=int,
                     help='print loss info every this many training examples')
     ap.add_argument('--checkpoint_every', default=10000, type=int,
                     help='write out checkpoint every this many training examples')
-    ap.add_argument('--initial_learning_rate', default=0.001, type=int,
+    ap.add_argument('--initial_learning_rate', default=0.01, type=int,
                     help='initial learning rate')
     ap.add_argument('--src_lang', default='fr',
                     help='Source (input) language code, e.g. "fr"')
@@ -635,6 +789,8 @@ def main():
         encoder.load_state_dict(state['enc_state'])
         decoder.load_state_dict(state['dec_state'])
 
+    BATCH_SIZE = args.batch_size
+
     # read in datafiles
     train_pairs = split_lines(args.train_file)
     dev_pairs = split_lines(args.dev_file)
@@ -656,6 +812,7 @@ def main():
     sorted_pairs = sorted(train_pairs, key=lambda pair: len(pair[0]))
 
     while iter_num < args.n_iters:
+
         iter_num += 1
         training_pair = tensors_from_pair(src_vocab, tgt_vocab, random.choice(train_pairs))
         input_tensor, input_lengths, target_tensor, target_lengths = getBatches(BATCH_SIZE,

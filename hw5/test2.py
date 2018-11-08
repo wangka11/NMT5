@@ -51,7 +51,8 @@ SOS_index = 0
 EOS_index = 1
 PAD_index = 2
 MAX_LENGTH = 15
-BATCH_SIZE = 3
+#BATCH_SIZE = 10
+
 
 
 class Vocab:
@@ -223,6 +224,7 @@ class EncoderRNN(nn.Module):
         "*** YOUR CODE HERE ***"
         #print(input_batch.shape, self.input_size, self.hidden_size)
         if batched:
+
             embedded = self.embedding(input_batch)
             outputs = embedded
             packed = torch.nn.utils.rnn.pack_padded_sequence(outputs, input_lengths)
@@ -418,13 +420,14 @@ def train(input_tensor, target_tensor, encoder, decoder, optimizer,
 
     encoder_outputs, encoder_hidden = encoder(input_tensor, encoder_hidden, input_lengths, batched=True)
 
-    decoder_input = torch.tensor([SOS_index] * BATCH_SIZE, device=device)
+    batch_size = input_tensor.size(1)
+    decoder_input = torch.tensor([SOS_index] * batch_size, device=device)
 
     decoder_hidden = encoder_hidden[:1]
 
     max_tgt_length = max(target_lengths)
 
-    decoder_outputs = torch.tensor(torch.zeros(max_tgt_length, BATCH_SIZE, decoder.output_size), device=device)
+    decoder_outputs = torch.tensor(torch.zeros(max_tgt_length, batch_size, decoder.output_size), device=device)
 
     #decoder_outputs = torch.tensor(torch.zeros(max_tgt_length, BATCH_SIZE, decoder.output_size), device=device)
 
@@ -584,6 +587,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--hidden_size', default=256, type=int,
                     help='hidden size of encoder/decoder, also word vector size')
+    ap.add_argument('--batch_size', default=3, type=int,
+                    help='batch size of training')
     ap.add_argument('--n_iters', default=10000, type=int,
                     help='total number of examples to train on')
     ap.add_argument('--print_every', default=5000, type=int,
@@ -638,6 +643,8 @@ def main():
     if args.load_checkpoint is not None:
         encoder.load_state_dict(state['enc_state'])
         decoder.load_state_dict(state['dec_state'])
+
+    BATCH_SIZE = args.batch_size
 
     # read in datafiles
     train_pairs = split_lines(args.train_file)
