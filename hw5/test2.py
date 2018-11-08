@@ -226,7 +226,7 @@ class EncoderRNN(nn.Module):
             embedded = self.embedding(input_batch)
             outputs = embedded
             packed = torch.nn.utils.rnn.pack_padded_sequence(outputs, input_lengths)
-            cn = self.get_batched_hidden_state()
+            cn = self.get_batched_hidden_state(input_batch.size(1))
             outputs, (hidden, cn) = self.lstm(packed, (hidden, cn))
 
             outputs, output_lengths = torch.nn.utils.rnn.pad_packed_sequence(outputs)
@@ -285,8 +285,8 @@ class EncoderRNN(nn.Module):
         #     outputs[ei][self.hidden_size:] = hidden[0, 0]
         # return outputs, hidden
 
-    def get_batched_hidden_state(self):
-        return torch.zeros(2, BATCH_SIZE, self.hidden_size, device=device)
+    def get_batched_hidden_state(self, batch_size):
+        return torch.zeros(2, batch_size, self.hidden_size, device=device)
 
 
     def get_initial_hidden_state(self):
@@ -323,7 +323,7 @@ class AttnDecoderRNN(nn.Module):
         self.embedding = nn.Embedding(self.output_size, self.hidden_size)
         self.dropout = nn.Dropout(self.dropout_p)
 
-        self.lstm = nn.LSTM(self.hidden_size, self.hidden_size, dropout=dropout_p)
+        self.lstm = nn.LSTM(self.hidden_size, self.hidden_size)
         self.out = nn.Linear(self.hidden_size, self.output_size)
         self.attention = nn.Linear(self.hidden_size * 2, self.hidden_size) #max_length)
         self.attentionNB = nn.Linear(self.hidden_size * 2, self.max_length)
@@ -342,28 +342,30 @@ class AttnDecoderRNN(nn.Module):
 
         "*** YOUR CODE HERE ***"
         if batched:
-            embedded = self.dropout(self.embedding(input).view(1, BATCH_SIZE, self.hidden_size))
+            batch_size = encoder_outputs.size(1)
+            embedded = self.dropout(self.embedding(input).view(1, batch_size, self.hidden_size))
 
-            cn = self.get_batched_hidden_state()
+            cn = self.get_batched_hidden_state(batch_size)
             output, (hidden, cn) = self.lstm(embedded, (hidden, cn))
             #output = output[:, :, :self.hidden_size] + output[:, :, self.hidden_size:]
 
-            attn_weights = torch.tensor(torch.zeros(BATCH_SIZE, encoder_outputs.size(0)), device=device)
-            for i in range(BATCH_SIZE):
+            attn_weights = torch.tensor(torch.zeros(batch_size, encoder_outputs.size(0)), device=device)
+            for i in range(batch_size):
                 for j in range(encoder_outputs.size(0)):
                     #attn_weights[i, j] = self.attention(torch.cat((embedded[0, i].unsqueeze(0), hidden[0, i].unsqueeze(0)), 1))
                     #print(output[:, i].shape, encoder_outputs[j, i].unsqueeze(0).shape)
 
-                    temp = self.attention(torch.cat((output[:, i], encoder_outputs[j, i].unsqueeze(0)), 1))
+                    temp = self.attention(torch.cat((hidden[:, i], encoder_outputs[j, i].unsqueeze(0)), 1))
 
                     attn_weights[i, j] = self.attention_v.view(-1).dot((temp.view(-1)))
 
                     #attn_weights[i, j] = hidden[:, i].dot(encoder_outputs[j, i].unsqueeze(0))
 
-            attn_weights = self.softmax(attn_weights).unsqueeze(1).view(1, BATCH_SIZE, -1)
+            attn_weights = self.softmax(attn_weights).unsqueeze(0)
 
-            attn_applied = torch.bmm(attn_weights.transpose(0, 1), encoder_outputs.transpose(0, 1).squeeze(1)).transpose(0, 1).squeeze(0)
+            attn_applied = torch.bmm(attn_weights.transpose(0, 1), encoder_outputs.transpose(0, 1).squeeze(1)).squeeze(1)
             #cont = attn_weights.bmm(encoder_outputs.transpose(0, 1)).squeeze(1)
+
             output = output.squeeze(0)
 
             output = self.tanh(self.attention_combine(torch.cat((output, attn_applied), 1))) # OR USE ReLU?
@@ -388,8 +390,8 @@ class AttnDecoderRNN(nn.Module):
             return log_softmax, hidden, attn_weights
 
 
-    def get_batched_hidden_state(self):
-        return torch.zeros(1, BATCH_SIZE, self.hidden_size, device=device)
+    def get_batched_hidden_state(self, batch_size):
+        return torch.zeros(1, batch_size, self.hidden_size, device=device)
 
 
     def get_initial_hidden_state(self):
@@ -400,14 +402,14 @@ class AttnDecoderRNN(nn.Module):
 
 def train(input_tensor, target_tensor, encoder, decoder, optimizer,
           criterion, input_lengths, target_lengths, max_length=MAX_LENGTH):
-    encoder_hidden = encoder.get_batched_hidden_state()
+    encoder_hidden = encoder.get_batched_hidden_state(input_tensor.size(1))
 
     # make sure the encoder and decoder are in training mode so dropout is applied
     encoder.train()
     decoder.train()
 
     "*** YOUR CODE HERE ***"
-    print(input_tensor.shape)
+
     optimizer.zero_grad()
 
     target_length = target_tensor.size(0)
@@ -473,7 +475,7 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
         #print(sentence)
         input_tensor = tensor_from_sentence(src_vocab, sentence)
         input_length = input_tensor.size()[0]
-        encoder_hidden = encoder.get_initial_hidden_state()
+        encoder_hidden = encoder.get_batched_hidden_state(input_tensor.size(1))
 
         input_lengths = [len(input_tensor)]
 
@@ -485,19 +487,21 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
         #     encoder_outputs[ei] += encoder_output[0, 0]
 
         #encoder_outputs, encoder_hidden = encoder(input_tensor, encoder_hidden)
-        encoder_outputs, encoder_hidden = encoder(input_tensor, encoder_hidden, input_lengths)
+        encoder_outputs, encoder_hidden = encoder(input_tensor, encoder_hidden, input_lengths, batched=True)
 
         decoder_input = torch.tensor([[SOS_index]], device=device)
 
-        decoder_hidden = encoder_hidden
+        decoder_hidden = encoder_hidden[:1]
 
         decoded_words = []
         decoder_attentions = torch.zeros(max_length, max_length)
 
         for di in range(max_length):
             decoder_output, decoder_hidden, decoder_attention = decoder(
-                decoder_input, decoder_hidden, encoder_outputs)
-            decoder_attentions[di] = decoder_attention.data
+                decoder_input, decoder_hidden, encoder_outputs, batched=True)
+            decoder_attentions[di, :decoder_attention.size(2)] += decoder_attention.squeeze(0).squeeze(0).cpu().data
+
+            #decoder_attentions[di] = decoder_attention.data
             topv, topi = decoder_output.data.topk(1)
             if topi.item() == EOS_index:
                 decoded_words.append(EOS_token)
@@ -507,7 +511,7 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
 
             decoder_input = topi.squeeze().detach()
 
-        return decoded_words, decoder_attentions[:di + 1]
+        return decoded_words, decoder_attentions[:di + 1, :len(encoder_outputs)]
 
 
 ######################################################################
@@ -656,6 +660,7 @@ def main():
     sorted_pairs = sorted(train_pairs, key=lambda pair: len(pair[0]))
 
     while iter_num < args.n_iters:
+
         iter_num += 1
         training_pair = tensors_from_pair(src_vocab, tgt_vocab, random.choice(train_pairs))
         input_tensor, input_lengths, target_tensor, target_lengths = getBatches(BATCH_SIZE,
