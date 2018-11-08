@@ -54,7 +54,7 @@ SOS_index = 0
 EOS_index = 1
 PAD_index = 2
 MAX_LENGTH = 15
-#BATCH_SIZE = 10
+#BATCH_SIZE = 10ok
 
 
 
