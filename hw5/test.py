@@ -348,7 +348,9 @@ class AttnDecoderRNN(nn.Module):
         "*** YOUR CODE HERE ***"
         if batched:
             batch_size = encoder_outputs.size(1)
-            embedded = self.dropout(self.embedding(input).view(1, batch_size, self.hidden_size))
+
+            embedded = self.dropout(self.embedding(input)).view(1, batch_size, self.hidden_size)
+            #embedded = self.dropout(self.embedding(input).view(1, batch_size, self.hidden_size))
 
             cn = self.get_batched_hidden_state(batch_size)
             output, (hidden, cn) = self.lstm(embedded, (hidden, cn))
@@ -366,7 +368,17 @@ class AttnDecoderRNN(nn.Module):
 
                     #attn_weights[i, j] = hidden[:, i].dot(encoder_outputs[j, i].unsqueeze(0))
 
-            attn_weights = self.softmax(attn_weights).unsqueeze(0)
+            #attn_weights = self.softmax(attn_weights).unsqueeze(0)
+            attn_weights = self.softmax(attn_weights).unsqueeze(1)
+            context = attn_weights.bmm(encoder_outputs.transpose(0, 1))
+
+            output = output.squeeze(0)
+            context = context.squeeze(1)
+            concat_input = torch.cat((output, context), 1)
+            concat_output = self.tanh(self.attention_combine(concat_input))
+
+            output = self.out(concat_output)
+            return output, hidden, attn_weights
 
             attn_applied = torch.bmm(attn_weights.transpose(0, 1), encoder_outputs.transpose(0, 1).squeeze(1)).squeeze(1)
             #cont = attn_weights.bmm(encoder_outputs.transpose(0, 1)).squeeze(1)
@@ -442,12 +454,17 @@ def train(input_tensor, target_tensor, encoder, decoder, optimizer,
         decoder_outputs[i] = decoder_output
         decoder_input = target_tensor[i]
 
-        loss += criterion(decoder_output, target_tensor[i])
+        #loss += criterion(decoder_output, target_tensor[i])
 
         # print(decoder_output, decoder_input)
         # if decoder_input.item() == PAD_token:
         #     break
 
+    loss = cross_entropy(
+        decoder_outputs.transpose(0, 1).contiguous(),  # -> batch x seq
+        target_tensor.transpose(0, 1).contiguous(),  # -> batch x seq
+        target_lengths
+    )
 
     # for i in range(target_length):
     #     decoder_output, decoder_hidden, decoder_attention = decoder(decoder_input, decoder_hidden, encoder_outputs)
@@ -463,7 +480,55 @@ def train(input_tensor, target_tensor, encoder, decoder, optimizer,
 
     optimizer.step()
 
-    return loss.item() / target_length
+    return loss.item() #.item() / target_length
+
+
+def cross_entropy(logits, target, length):
+    length = torch.tensor(length, dtype=torch.long, device=device)
+    #length = Variable(torch.LongTensor(length)).cuda()
+
+    """
+    Args:
+        logits: A Variable containing a FloatTensor of size
+            (batch, max_len, num_classes) which contains the
+            unnormalized probability for each class.
+        target: A Variable containing a LongTensor of size
+            (batch, max_len) which contains the index of the true
+            class for each corresponding step.
+        length: A Variable containing a LongTensor of size (batch,)
+            which contains the length of each data in a batch.
+    Returns:
+        loss: An average loss value masked by the length.
+    """
+
+    # logits_flat: (batch * max_len, num_classes)
+    logits_flat = logits.view(-1, logits.size(-1))
+    # log_probs_flat: (batch * max_len, num_classes)
+    log_probs_flat = F.log_softmax(logits_flat)
+    # target_flat: (batch * max_len, 1)
+    target_flat = target.view(-1, 1)
+    # losses_flat: (batch * max_len, 1)
+    losses_flat = -torch.gather(log_probs_flat, dim=1, index=target_flat)
+    # losses: (batch, max_len)
+    losses = losses_flat.view(*target.size())
+    # mask: (batch, max_len)
+    mask = sequence_mask(sequence_length=length, max_len=target.size(1))
+    losses = losses * mask.float()
+    loss = losses.sum() / length.float().sum()
+    return loss
+
+def sequence_mask(sequence_length, max_len=None):
+    if max_len is None:
+        max_len = sequence_length.data.max()
+    batch_size = sequence_length.size(0)
+    seq_range = torch.range(0, max_len - 1).long()
+    seq_range_expand = seq_range.unsqueeze(0).expand(batch_size, max_len)
+    seq_range_expand = Variable(seq_range_expand)
+    if sequence_length.is_cuda:
+        seq_range_expand = seq_range_expand.cuda()
+    seq_length_expand = (sequence_length.unsqueeze(1)
+                         .expand_as(seq_range_expand))
+    return seq_range_expand < seq_length_expand
 
 
 class BeamSearchNode(object):
@@ -544,6 +609,25 @@ def translate(encoder, decoder, sentence, src_vocab, tgt_vocab, max_length=MAX_L
 
         decoded_words = []
         decoder_attentions = torch.zeros(max_length, max_length)
+
+        for di in range(max_length):
+            decoder_output, decoder_hidden, decoder_attention = decoder(
+                decoder_input, decoder_hidden, encoder_outputs, batched=True)
+            decoder_attentions[di, :decoder_attention.size(2)] += decoder_attention.squeeze(0).squeeze(0).cpu().data
+
+            #decoder_attentions[di] = decoder_attention.data
+            topv, topi = decoder_output.data.topk(1)
+            if topi.item() == EOS_index:
+                decoded_words.append(EOS_token)
+                break
+            else:
+                decoded_words.append(tgt_vocab.index2word[topi.item()])
+
+            #decoder_input = topi.squeeze().detach()
+            decoder_input = torch.tensor([topi[0][0]], dtype=torch.long, device=device)
+
+        return decoded_words, decoder_attentions[:di + 1, :len(encoder_outputs)]
+
 
         while True:
             if qsize > 2000:
@@ -732,9 +816,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--hidden_size', default=256, type=int,
                     help='hidden size of encoder/decoder, also word vector size')
-    ap.add_argument('--batch_size', default=3, type=int,
+    ap.add_argument('--batch_size', default=64, type=int,
                     help='batch size of training')
-    ap.add_argument('--n_iters', default=100, type=int,
+    ap.add_argument('--n_iters', default=10000, type=int,
                     help='total number of examples to train on')
     ap.add_argument('--print_every', default=500, type=int,
                     help='print loss info every this many training examples')
